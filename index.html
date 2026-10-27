@@ -254,7 +254,7 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;text-a
 .empty{padding:1.4rem;text-align:center;color:var(--ink-2);background:var(--paper);border:2px dashed var(--line);border-radius:16px}
 .dash-wrap h3.sec{margin:1.6rem 0 .5rem;font-size:1.2rem}
 .reward{margin:.3rem 0;font-weight:700;color:var(--pandan);animation:rise .6s ease-out}
-.toast{position:fixed;left:50%;bottom:calc(6rem + env(safe-area-inset-bottom,0px));z-index:60;transform:translateX(-50%);padding:.8rem 1.3rem;border-radius:14px;background:var(--ink);color:#fff;font-weight:600;animation:rise .4s ease-out}
+.toast{max-width:min(92vw,520px);text-align:center;line-height:1.5;position:fixed;left:50%;bottom:calc(6rem + env(safe-area-inset-bottom,0px));z-index:60;transform:translateX(-50%);padding:.8rem 1.3rem;border-radius:14px;background:var(--ink);color:#fff;font-weight:600;animation:rise .4s ease-out}
 @keyframes rise{from{opacity:0;transform:translate(0,12px)}}
 .toast{animation-name:tin}@keyframes tin{from{opacity:0;transform:translate(-50%,14px)}}
 @keyframes grow{from{transform:scale(.5);opacity:.3}}
@@ -737,9 +737,11 @@ const VoiceAssistant = {
         if (!this.synth || this.primed) return false;
         try {
             this.synth.resume();
-            const u = new SpeechSynthesisUtterance("");
+            const u = new SpeechSynthesisUtterance(" ");
             u.volume = 0;
             this.synth.speak(u);
+            // กันสถานะ speaking ค้างบนมือถือบางรุ่น (utterance ว่างไม่ยิง onend)
+            setTimeout(() => { try { this.synth.cancel(); } catch (e) {} }, 400);
             this.primed = true;
             return true;
         } catch (e) { return false; }
@@ -755,7 +757,12 @@ const VoiceAssistant = {
 
         try {
             if (forcePriority) { this.gen++; this.chain = false; this.synth.cancel(); }
-            else if (this.synth.speaking || this.synth.pending || this.chain) return;
+            else if (this.synth.speaking || this.synth.pending || this.chain) {
+                // ถ้าค้างนานผิดปกติ (มือถือบางรุ่น) ให้ล้างแล้วพูดใหม่
+                if (this.busySince && now - this.busySince > 7000) { this.gen++; this.chain = false; this.synth.cancel(); }
+                else return;
+            }
+            this.busySince = now;
 
             const L = window.LANG || 'th';
             // อังกฤษ/จีน/ญี่ปุ่น: แบ่งเป็นประโยค พูดทีละประโยคพร้อมเว้นจังหวะ ให้ฟังลื่นไหลเป็นธรรมชาติ
@@ -776,10 +783,10 @@ const VoiceAssistant = {
                     if (gen !== this.gen) return;
                     if (i + 1 < parts.length) setTimeout(() => say(i + 1), 260); else this.chain = false;
                 };
-                u.onerror = () => { if (gen === this.gen) this.chain = false; };
+                u.onerror = (e) => { console.warn('TTS error', e && e.error); this.lastError = e && e.error; if (gen === this.gen) this.chain = false; };
                 this.synth.speak(u);
             };
-            say(0);
+            setTimeout(() => say(0), forcePriority ? 150 : 0);   // Chrome มือถือ: speak ทันทีหลัง cancel อาจเงียบ
             this.lastSpoken = text;
             this.lastSpokenTime = now;
         } catch (e) { console.error("Speech error:", e); }
@@ -1622,7 +1629,7 @@ function award(idx) {
 function toast(msg, n = 0) {
     setTimeout(() => {
         const el = document.createElement('div'); el.className = 'toast'; el.setAttribute('role', 'status'); el.textContent = msg;
-        document.body.appendChild(el); setTimeout(() => el.remove(), 2600);
+        document.body.appendChild(el); setTimeout(() => el.remove(), Math.max(2600, msg.length * 110));
     }, 2800 * n);
 }
 const thN = n => th(Number(n).toLocaleString('en-US'));
@@ -1715,8 +1722,22 @@ function setLoading(state, detail, opt = {}) {
     $('load-detail').textContent = detail || '';
     $('btn-retry').hidden = !err;
 }
+function diagnoseVoice() {
+    const ua = navigator.userAgent || '';
+    if (/Line\/|FBAN|FBAV|Instagram|MicroMessenger/i.test(ua)) { toast('เปิดจากแอปแชต/โซเชียล เสียงอาจไม่ทำงาน — แตะ ⋯ แล้วเลือก "เปิดด้วย Chrome/Safari"'); return; }
+    if (!window.speechSynthesis) { toast('เบราว์เซอร์นี้ไม่รองรับเสียงพากย์ — ลองเปิดด้วย Chrome หรือ Safari'); return; }
+    setTimeout(() => {
+        const vs = speechSynthesis.getVoices();
+        if ((window.LANG || 'th') === 'th' && !vs.some(v => /^th/i.test((v.lang || '').replace('_', '-')))) {
+            toast('เครื่องนี้ยังไม่มีเสียงภาษาไทย — ติดตั้ง "Speech Services by Google" (Android) หรือเพิ่มเสียงไทยใน การตั้งค่า > การเข้าถึง > เนื้อหาที่พูดได้ (iPhone)');
+        } else if (/iPhone|iPad/i.test(ua)) {
+            toast('ถ้ายังไม่ได้ยิน ให้ปิดโหมดเงียบ (สวิตช์ข้างเครื่อง) และเพิ่มเสียงมือถือ');
+        }
+    }, 1500);
+}
 async function beginTraining() {
     VoiceAssistant.prime();
+    diagnoseVoice();
     try {
         await Tone.start();
         initSound();
